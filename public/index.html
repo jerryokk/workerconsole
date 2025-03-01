@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WorkerConsole - 本地 Workers 管理系统</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="d-flex flex-column vh-100">
+    <!-- 侧边栏和主内容区域 -->
+    <div class="d-flex flex-grow-1">
+      <!-- 侧边导航栏 -->
+      <div class="sidebar">
+        <div class="sidebar-header">
+          <div class="logo">
+            <i class="bi bi-cloud-lightning"></i>
+            <span>WorkerConsole</span>
+          </div>
+          <button id="sidebar-toggle" class="sidebar-toggle d-md-none">
+            <i class="bi bi-x-lg"></i>
+          </button>
+        </div>
+        <div class="sidebar-menu">
+          <ul>
+            <li class="active">
+              <a href="/">
+                <i class="bi bi-hdd-stack"></i>
+                <span>Workers</span>
+              </a>
+            </li>
+            <li>
+              <a href="/logs">
+                <i class="bi bi-journal-text"></i>
+                <span>日志</span>
+              </a>
+            </li>
+            <li>
+              <a href="/settings">
+                <i class="bi bi-gear"></i>
+                <span>设置</span>
+              </a>
+            </li>
+            <li>
+              <a href="/help">
+                <i class="bi bi-question-circle"></i>
+                <span>帮助</span>
+              </a>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- 主内容区域 -->
+      <div class="main-content">
+        <!-- 顶部导航栏 -->
+        <header class="top-navbar" id="main-header">
+          <div class="page-title">
+            <button id="sidebar-open-btn" class="sidebar-open-btn d-md-none">
+              <i class="bi bi-list"></i>
+            </button>
+            <h1 id="current-page-title">Workers</h1>
+          </div>
+          <div class="top-navbar-actions">
+            <button id="create-worker-btn" class="btn btn-primary">
+              <i class="bi bi-plus-lg"></i> 创建 Worker
+            </button>
+          </div>
+        </header>
+
+        <!-- 内容区域 -->
+        <div class="content-wrapper">
+          <!-- Workers 列表视图 -->
+          <div id="workers-list" class="content-section">
+            <div class="workers-grid" id="workers-grid">
+              <!-- Workers 卡片将在这里动态加载 -->
+            </div>
+          </div>
+
+          <!-- Worker 详情视图 -->
+          <div id="worker-detail" class="content-section" style="display: none;">
+            <div class="worker-detail-header">
+              <div class="worker-title-section">
+                <button id="back-to-list-btn" class="btn btn-icon">
+                  <i class="bi bi-arrow-left"></i>
+                </button>
+                <h2 id="worker-name"></h2>
+              </div>
+              <div class="worker-actions">
+                <button id="save-deploy-btn" class="btn btn-primary">
+                  <i class="bi bi-rocket-takeoff"></i> 保存并部署
+                </button>
+              </div>
+            </div>
+
+            <div class="worker-detail-content">
+              <div class="row g-4">
+                <!-- 基本信息卡片 -->
+                <div class="col-md-4">
+                  <div class="card">
+                    <div class="card-header">
+                      <h5>基本信息</h5>
+                    </div>
+                    <div class="card-body">
+                      <div class="mb-3">
+                        <label class="form-label">名称</label>
+                        <input type="text" id="edit-name" class="form-control">
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label">路由</label>
+                        <div class="input-group">
+                          <span class="input-group-text">/</span>
+                          <input type="text" id="edit-route" class="form-control">
+                        </div>
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label">描述</label>
+                        <textarea id="edit-description" class="form-control" rows="3" placeholder="简要描述此Worker的功能..."></textarea>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">状态</div>
+                        <div id="worker-status" class="info-value"></div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">创建时间</div>
+                        <div id="worker-created-at" class="info-value"></div>
+                      </div>
+                      <div class="info-item">
+                        <div class="info-label">更新时间</div>
+                        <div id="worker-updated-at" class="info-value"></div>
+                      </div>
+                      <div class="mt-4">
+                        <button id="delete-worker-btn" class="btn btn-danger w-100">
+                          <i class="bi bi-trash"></i> 删除 Worker
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 代码编辑器卡片 -->
+                <div class="col-md-8">
+                  <div class="card h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                      <h5>代码编辑器</h5>
+                      <button id="preview-worker-btn" class="btn btn-info" style="display: none;">
+                        <i class="bi bi-box-arrow-up-right"></i> 预览
+                      </button>
+                    </div>
+                    <div class="card-body p-0">
+                      <div id="monaco-editor" class="monaco-editor-container"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 日志卡片 -->
+                <div class="col-12">
+                  <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                      <h5>日志</h5>
+                      <button id="clear-logs-btn" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-trash"></i> 清除日志
+                      </button>
+                    </div>
+                    <div class="card-body p-0">
+                      <div id="logs-container" class="logs-container">
+                        <!-- 日志将在这里动态加载 -->
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 创建 Worker 模态框 -->
+    <div class="modal fade" id="createWorkerModal" tabindex="-1" aria-labelledby="createWorkerModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="createWorkerModalLabel">创建新 Worker</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="new-worker-name" class="form-label">名称</label>
+              <input type="text" class="form-control" id="new-worker-name" placeholder="输入 Worker 名称">
+            </div>
+            <div class="mb-3">
+              <label for="new-worker-route" class="form-label">路由路径</label>
+              <input type="text" class="form-control" id="new-worker-route" placeholder="例如: /example">
+            </div>
+            <div class="mb-3">
+              <label for="new-worker-description" class="form-label">描述</label>
+              <textarea class="form-control" id="new-worker-description" rows="3" placeholder="描述此 Worker 的功能"></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" class="btn btn-primary" id="confirm-create-worker-btn">创建</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 确认删除模态框 -->
+    <div class="modal fade" id="confirm-delete-modal" tabindex="-1" data-bs-backdrop="static">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">确认删除</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="alert alert-danger">
+              <i class="bi bi-exclamation-triangle-fill me-2"></i>
+              <span>此操作无法撤销！</span>
+            </div>
+            <p>确定要删除 Worker "<span id="delete-worker-name"></span>" 吗？</p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="button" id="confirm-delete-btn" class="btn btn-danger">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 先加载第三方库 -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.2/dist/socket.io.min.js"></script>
+  
+  <!-- 加载应用程序代码 -->
+  <script src="/app.js"></script>
+  
+  <!-- 加载 Monaco 编辑器 -->
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.41.0/min/vs/loader.js"></script>
+  <script>
+    // 配置 Monaco 加载器
+    require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.41.0/min/vs' }});
+    
+    // 预加载 Monaco 编辑器
+    require(['vs/editor/editor.main'], function() {
+      console.log('Monaco 编辑器加载完成');
+    });
+  </script>
+</body>
+</html> 
