@@ -22,19 +22,36 @@ async function workerRouteHandler(req, res, next) {
     const workers = await Worker.getAll();
     const runningWorkers = Worker.getRunningWorkers();
     
-    // 查找匹配的 Worker
+    // 首先尝试查找精确匹配的 Worker
     for (const worker of workers) {
-      // 检查 Worker 是否正在运行且路由匹配
+      // 检查 Worker 是否正在运行且路由精确匹配
       if (runningWorkers.has(worker.id) && worker.route === reqPath) {
-        logger.addLog(worker.id, 'info', `收到请求: ${req.method} ${req.url}`);
+        logger.addLog(worker.id, 'info', `收到精确匹配请求: ${req.method} ${req.url}`);
+        return workerService.handleWorkerRequest(worker.id, req, res);
+      }
+    }
+    
+    // 如果没有精确匹配，尝试查找前缀匹配的 Worker
+    // 按路由长度降序排序，以便优先匹配最长的路由
+    const sortedWorkers = [...workers].sort((a, b) => b.route.length - a.route.length);
+    
+    for (const worker of sortedWorkers) {
+      // 检查 Worker 是否正在运行且请求路径以 Worker 路由开头
+      // 确保路由后面是斜杠或结束，避免部分匹配（如 'test1' 匹配 'test'）
+      const workerRoute = worker.route;
+      const isPrefix = reqPath === workerRoute || 
+                       reqPath.startsWith(workerRoute + '/');
+      
+      if (runningWorkers.has(worker.id) && isPrefix) {
+        logger.addLog(worker.id, 'info', `收到前缀匹配请求: ${req.method} ${req.url} (匹配路由: ${workerRoute})`);
         return workerService.handleWorkerRequest(worker.id, req, res);
       }
       
       // 如果路由匹配但 Worker 未运行，返回 404
-      if (worker.route === reqPath && !runningWorkers.has(worker.id)) {
+      if (isPrefix && !runningWorkers.has(worker.id)) {
         return res.status(404).json({
           error: 'Worker 未运行',
-          message: `路由 "${reqPath}" 对应的 Worker 存在但未运行`
+          message: `路由 "${workerRoute}" 对应的 Worker 存在但未运行`
         });
       }
     }
