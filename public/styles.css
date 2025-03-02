@@ -461,8 +461,8 @@ a {
 }
 
 .log-entry {
-  margin-bottom: 8px;
-  padding: 5px;
+  margin-bottom: 3px;
+  padding: 2px;
   border-radius: 3px;
   display: flex;
   align-items: flex-start;

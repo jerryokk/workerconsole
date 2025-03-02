@@ -985,7 +985,6 @@ function showLogsPage() {
       </div>
       <div class="card-body">
         <p>此页面将显示所有 Worker 的综合日志信息。</p>
-        <p>您可以在此查看系统级别的日志和所有 Worker 的运行状态变化。</p>
       </div>
     </div>
   `;
@@ -1022,7 +1021,7 @@ function showSettingsPage() {
       </div>
       <div class="card-body">
         <p>此页面将允许您配置 WorkerConsole 的各项设置。</p>
-        <p>包括服务器端口、日志保留策略、自动启动选项等。</p>
+        <p>包括日志保留策略、自动启动选项等。</p>
       </div>
     </div>
   `;
