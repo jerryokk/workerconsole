@@ -86,6 +86,210 @@ async function startWorker(id) {
         Float64Array: Float64Array,
         ArrayBuffer: ArrayBuffer,
         DataView: DataView,
+        // 添加流处理相关的类
+        ReadableStream: class ReadableStream {
+          constructor(underlyingSource = {}) {
+            this._source = underlyingSource;
+            this._controller = null;
+            this._reader = null;
+            this._state = 'readable';
+            this._storedError = null;
+            this._disturbed = false;
+            
+            // 创建控制器
+            this._controller = {
+              enqueue: (chunk) => {
+                if (this._state !== 'readable') {
+                  throw new Error('Cannot enqueue to a non-readable stream');
+                }
+                
+                if (this._reader && this._reader._resolveReadPromise) {
+                  const resolve = this._reader._resolveReadPromise;
+                  this._reader._resolveReadPromise = null;
+                  this._reader._readPromise = null;
+                  resolve({ value: chunk, done: false });
+                } else {
+                  this._reader = this._reader || {};
+                  this._reader._pendingChunks = this._reader._pendingChunks || [];
+                  this._reader._pendingChunks.push(chunk);
+                }
+              },
+              close: () => {
+                if (this._state !== 'readable') {
+                  return;
+                }
+                
+                this._state = 'closed';
+                
+                if (this._reader && this._reader._resolveReadPromise) {
+                  const resolve = this._reader._resolveReadPromise;
+                  this._reader._resolveReadPromise = null;
+                  this._reader._readPromise = null;
+                  resolve({ value: undefined, done: true });
+                }
+              },
+              error: (error) => {
+                if (this._state !== 'readable') {
+                  return;
+                }
+                
+                this._state = 'errored';
+                this._storedError = error;
+                
+                if (this._reader && this._reader._rejectReadPromise) {
+                  const reject = this._reader._rejectReadPromise;
+                  this._reader._resolveReadPromise = null;
+                  this._reader._rejectReadPromise = null;
+                  this._reader._readPromise = null;
+                  reject(error);
+                }
+              }
+            };
+            
+            // 启动底层源
+            if (this._source.start) {
+              try {
+                this._source.start(this._controller);
+              } catch (error) {
+                this._controller.error(error);
+              }
+            }
+          }
+          
+          getReader() {
+            if (this._reader) {
+              throw new Error('A reader has already been created for this stream');
+            }
+            
+            this._disturbed = true;
+            
+            this._reader = {
+              _stream: this,
+              _pendingChunks: [],
+              _readPromise: null,
+              _resolveReadPromise: null,
+              _rejectReadPromise: null,
+              
+              read: () => {
+                if (this._state === 'errored') {
+                  return Promise.reject(this._storedError);
+                }
+                
+                if (this._state === 'closed') {
+                  return Promise.resolve({ value: undefined, done: true });
+                }
+                
+                if (this._reader._pendingChunks.length > 0) {
+                  const chunk = this._reader._pendingChunks.shift();
+                  return Promise.resolve({ value: chunk, done: false });
+                }
+                
+                if (this._reader._readPromise) {
+                  return this._reader._readPromise;
+                }
+                
+                this._reader._readPromise = new Promise((resolve, reject) => {
+                  this._reader._resolveReadPromise = resolve;
+                  this._reader._rejectReadPromise = reject;
+                });
+                
+                return this._reader._readPromise;
+              },
+              
+              releaseLock: () => {
+                if (!this._reader) {
+                  return;
+                }
+                
+                this._reader = null;
+              },
+              
+              cancel: (reason) => {
+                this._disturbed = true;
+                
+                if (this._state === 'closed') {
+                  return Promise.resolve();
+                }
+                
+                if (this._state === 'errored') {
+                  return Promise.reject(this._storedError);
+                }
+                
+                this._state = 'closed';
+                
+                if (this._source.cancel) {
+                  try {
+                    this._source.cancel(reason);
+                  } catch (error) {
+                    // 忽略取消时的错误
+                  }
+                }
+                
+                return Promise.resolve();
+              }
+            };
+            
+            return this._reader;
+          }
+          
+          cancel(reason) {
+            if (!this._disturbed) {
+              this._disturbed = true;
+            }
+            
+            if (this._state === 'closed') {
+              return Promise.resolve();
+            }
+            
+            if (this._state === 'errored') {
+              return Promise.reject(this._storedError);
+            }
+            
+            this._state = 'closed';
+            
+            if (this._source.cancel) {
+              try {
+                this._source.cancel(reason);
+              } catch (error) {
+                // 忽略取消时的错误
+              }
+            }
+            
+            return Promise.resolve();
+          }
+        },
+        TransformStream: class TransformStream {
+          constructor(transformer = {}) {
+            this.readable = new ReadableStream({
+              start: (controller) => {
+                this._readableController = controller;
+              }
+            });
+            
+            this.writable = {
+              getWriter: () => {
+                return {
+                  write: async (chunk) => {
+                    if (transformer.transform) {
+                      await transformer.transform(chunk, this._readableController);
+                    } else {
+                      this._readableController.enqueue(chunk);
+                    }
+                  },
+                  close: async () => {
+                    if (transformer.flush) {
+                      await transformer.flush(this._readableController);
+                    }
+                    this._readableController.close();
+                  },
+                  abort: (reason) => {
+                    this._readableController.error(reason);
+                  }
+                };
+              }
+            };
+          }
+        },
         crypto: {
           subtle: {
             digest: async (algorithm, data) => {
@@ -136,6 +340,9 @@ async function startWorker(id) {
           Float64Array: Float64Array,
           ArrayBuffer: ArrayBuffer,
           DataView: DataView,
+          // 添加流处理相关的类到全局对象
+          ReadableStream: ReadableStream,
+          TransformStream: TransformStream,
           crypto: {
             subtle: {
               digest: async (algorithm, data) => {
@@ -196,6 +403,16 @@ async function startWorker(id) {
             this.status = init.status || 200;
             this.statusText = init.statusText || '';
             this.headers = new Headers(init.headers || {});
+            
+            // 添加对流式响应的支持
+            if (body && typeof body.getReader === 'function') {
+              this.bodyUsed = false;
+              this._bodyStream = body;
+            } else if (body && typeof body.pipe === 'function') {
+              // Node.js 流
+              this.bodyUsed = false;
+              this._bodyNodeStream = body;
+            }
           }
           
           async text() {
@@ -203,12 +420,29 @@ async function startWorker(id) {
               return this.body;
             } else if (this.body instanceof Buffer) {
               return this.body.toString('utf8');
-            } else if (typeof this.body.pipe === 'function') {
-              // 处理流
+            } else if (this._bodyStream) {
+              // 处理 Web 流
+              const reader = this._bodyStream.getReader();
+              let result = '';
+              const decoder = new TextDecoder();
+              
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                result += decoder.decode(value, { stream: true });
+              }
+              
+              result += decoder.decode();
+              return result;
+            } else if (this._bodyNodeStream || typeof this.body?.pipe === 'function') {
+              // 处理 Node.js 流
+              const stream = this._bodyNodeStream || this.body;
               const chunks = [];
-              for await (const chunk of this.body) {
+              
+              for await (const chunk of stream) {
                 chunks.push(chunk);
               }
+              
               return Buffer.concat(chunks).toString('utf8');
             } else {
               return String(this.body);
@@ -218,6 +452,20 @@ async function startWorker(id) {
           async json() {
             const text = await this.text();
             return JSON.parse(text);
+          }
+          
+          // 添加流式响应支持
+          get body() {
+            if (this._bodyStream) {
+              return this._bodyStream;
+            } else if (this._bodyNodeStream) {
+              return this._bodyNodeStream;
+            }
+            return this._body;
+          }
+          
+          set body(value) {
+            this._body = value;
           }
         },
         Headers: class Headers {
@@ -264,6 +512,122 @@ async function startWorker(id) {
             this.method = init.method || this.method || 'GET';
             this.headers = new Headers(init.headers || this.headers || {});
             this.body = init.body || this.body || null;
+            this.bodyUsed = false;
+            
+            // 存储原始请求对象，以便在 worker.js 中可以访问
+            this.req = init.req;
+          }
+          
+          // 添加 json 方法
+          async json() {
+            if (this.bodyUsed) {
+              throw new Error('Body already read');
+            }
+            this.bodyUsed = true;
+            
+            if (!this.body) {
+              return null;
+            }
+            
+            // 如果 body 已经是对象，直接返回
+            if (typeof this.body === 'object' && this.body !== null && !(this.body instanceof Buffer) && !(this.body instanceof ArrayBuffer)) {
+              return this.body;
+            }
+            
+            // 如果 body 是字符串，尝试解析为 JSON
+            if (typeof this.body === 'string') {
+              try {
+                return JSON.parse(this.body);
+              } catch (e) {
+                throw new Error('Invalid JSON: ' + e.message);
+              }
+            }
+            
+            // 如果 body 是 Buffer，转换为字符串再解析
+            if (this.body instanceof Buffer || this.body instanceof ArrayBuffer) {
+              try {
+                const text = typeof this.body.toString === 'function' ? 
+                  this.body.toString('utf8') : 
+                  new TextDecoder().decode(this.body);
+                return JSON.parse(text);
+              } catch (e) {
+                throw new Error('Invalid JSON: ' + e.message);
+              }
+            }
+            
+            throw new Error('Unsupported body type');
+          }
+          
+          // 添加 text 方法
+          async text() {
+            if (this.bodyUsed) {
+              throw new Error('Body already read');
+            }
+            this.bodyUsed = true;
+            
+            if (!this.body) {
+              return '';
+            }
+            
+            // 如果 body 是字符串，直接返回
+            if (typeof this.body === 'string') {
+              return this.body;
+            }
+            
+            // 如果 body 是对象，转换为 JSON 字符串
+            if (typeof this.body === 'object' && this.body !== null && !(this.body instanceof Buffer) && !(this.body instanceof ArrayBuffer)) {
+              return JSON.stringify(this.body);
+            }
+            
+            // 如果 body 是 Buffer，转换为字符串
+            if (this.body instanceof Buffer || this.body instanceof ArrayBuffer) {
+              return typeof this.body.toString === 'function' ? 
+                this.body.toString('utf8') : 
+                new TextDecoder().decode(this.body);
+            }
+            
+            return String(this.body);
+          }
+          
+          // 添加 arrayBuffer 方法
+          async arrayBuffer() {
+            if (this.bodyUsed) {
+              throw new Error('Body already read');
+            }
+            this.bodyUsed = true;
+            
+            if (!this.body) {
+              return new ArrayBuffer(0);
+            }
+            
+            // 如果 body 已经是 ArrayBuffer，直接返回
+            if (this.body instanceof ArrayBuffer) {
+              return this.body;
+            }
+            
+            // 如果 body 是 Buffer，转换为 ArrayBuffer
+            if (this.body instanceof Buffer) {
+              return this.body.buffer.slice(
+                this.body.byteOffset,
+                this.body.byteOffset + this.body.byteLength
+              );
+            }
+            
+            // 如果 body 是字符串，转换为 ArrayBuffer
+            if (typeof this.body === 'string') {
+              const encoder = new TextEncoder();
+              return encoder.encode(this.body).buffer;
+            }
+            
+            // 如果 body 是对象，转换为 JSON 字符串再转换为 ArrayBuffer
+            if (typeof this.body === 'object' && this.body !== null) {
+              const encoder = new TextEncoder();
+              return encoder.encode(JSON.stringify(this.body)).buffer;
+            }
+            
+            // 其他类型，转换为字符串再转换为 ArrayBuffer
+            const encoder = new TextEncoder();
+            return encoder.encode(String(this.body)).buffer;
           }
         },
         console: {
@@ -421,6 +785,9 @@ async function handleWorkerRequest(id, req, res) {
       requestOptions.body = req.body;
     }
     
+    // 添加原始请求对象，以便在 worker.js 中可以访问
+    requestOptions.req = req;
+    
     const request = new vm.sandbox.Request(fullUrl, requestOptions);
     
     // 获取导出的模块
@@ -463,6 +830,161 @@ async function handleWorkerRequest(id, req, res) {
         
         // 处理响应体
         if (workerResponse.body) {
+          // 检查是否是流式响应
+          if (workerResponse._bodyStream) {
+            // 处理 Web 流
+            try {
+              const reader = workerResponse._bodyStream.getReader();
+              
+              // 设置正确的内容类型
+              if (!res.get('Content-Type')) {
+                res.set('Content-Type', 'text/event-stream');
+                res.set('Cache-Control', 'no-cache');
+                res.set('Connection', 'keep-alive');
+              }
+              
+              // 使用 Express 的流式响应
+              res.flushHeaders();
+              
+              // 添加错误处理
+              req.on('close', () => {
+                // 客户端关闭连接
+                logger.addLog(id, 'info', `客户端关闭了连接 ${req.method} ${originalUrl}`);
+                try {
+                  reader.cancel("客户端关闭连接").catch(() => {});
+                } catch (err) {
+                  // 忽略取消时的错误
+                }
+              });
+              
+              try {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  
+                  // 检查响应是否已关闭
+                  if (res.writableEnded || res.finished) {
+                    logger.addLog(id, 'info', `响应已结束，停止发送数据`);
+                    break;
+                  }
+                  
+                  // 发送数据块
+                  try {
+                    res.write(value);
+                    // 立即刷新
+                    if (typeof res.flush === 'function') {
+                      res.flush();
+                    }
+                  } catch (writeError) {
+                    logger.addLog(id, 'error', `写入响应失败: ${writeError.message}`);
+                    break;
+                  }
+                }
+                
+                // 检查响应是否已关闭
+                if (!res.writableEnded && !res.finished) {
+                  res.end();
+                }
+                
+                logger.addLog(id, 'info', `流式请求 ${req.method} ${originalUrl} 完成 [${workerResponse.status}]`);
+              } catch (readError) {
+                logger.addLog(id, 'error', `读取流数据失败: ${readError.message}`);
+                // 检查响应是否已开始发送
+                if (!res.headersSent) {
+                  res.status(500).send('处理流响应失败: ' + readError.message);
+                } else if (!res.writableEnded && !res.finished) {
+                  // 如果响应已经开始发送但未结束，结束响应
+                  res.end();
+                }
+              }
+              
+              return;
+            } catch (streamError) {
+              // 检查响应是否已经开始发送
+              if (!res.headersSent) {
+                logger.addLog(id, 'error', `处理 Web 流响应失败: ${streamError.message}`);
+                res.status(500).send('处理流响应失败: ' + streamError.message);
+              } else if (!res.writableEnded && !res.finished) {
+                // 如果响应已经开始发送，只能结束响应
+                logger.addLog(id, 'error', `处理 Web 流响应失败（响应已开始）: ${streamError.message}`);
+                res.end();
+              }
+              return;
+            }
+          } else if (workerResponse._bodyNodeStream || (workerResponse.body && typeof workerResponse.body.pipe === 'function')) {
+            // 处理 Node.js 流
+            try {
+              const stream = workerResponse._bodyNodeStream || workerResponse.body;
+              
+              // 设置正确的内容类型
+              if (!res.get('Content-Type')) {
+                res.set('Content-Type', 'text/event-stream');
+                res.set('Cache-Control', 'no-cache');
+                res.set('Connection', 'keep-alive');
+              }
+              
+              // 添加错误处理
+              req.on('close', () => {
+                // 客户端关闭连接
+                logger.addLog(id, 'info', `客户端关闭了连接 ${req.method} ${originalUrl}`);
+                try {
+                  // 尝试销毁流
+                  if (typeof stream.destroy === 'function') {
+                    stream.destroy();
+                  }
+                } catch (err) {
+                  // 忽略销毁时的错误
+                }
+              });
+              
+              // 使用 pipe 直接将流传输到响应
+              stream.pipe(res);
+              
+              // 监听流结束事件
+              stream.on('end', () => {
+                logger.addLog(id, 'info', `流式请求 ${req.method} ${originalUrl} 完成 [${workerResponse.status}]`);
+                // 确保响应已结束
+                if (!res.writableEnded && !res.finished) {
+                  try {
+                    res.end();
+                  } catch (endError) {
+                    logger.addLog(id, 'error', `结束响应失败: ${endError.message}`);
+                  }
+                }
+              });
+              
+              // 监听错误
+              stream.on('error', (err) => {
+                logger.addLog(id, 'error', `流式响应错误: ${err.message}`);
+                // 流已经开始，无法发送错误状态，只能结束响应
+                if (!res.writableEnded && !res.finished) {
+                  try {
+                    res.end();
+                  } catch (endError) {
+                    logger.addLog(id, 'error', `结束响应失败: ${endError.message}`);
+                  }
+                }
+              });
+              
+              return;
+            } catch (streamError) {
+              // 检查响应是否已经开始发送
+              if (!res.headersSent) {
+                logger.addLog(id, 'error', `处理 Node.js 流响应失败: ${streamError.message}`);
+                res.status(500).send('处理流响应失败: ' + streamError.message);
+              } else if (!res.writableEnded && !res.finished) {
+                // 如果响应已经开始发送，只能结束响应
+                logger.addLog(id, 'error', `处理 Node.js 流响应失败（响应已开始）: ${streamError.message}`);
+                try {
+                  res.end();
+                } catch (endError) {
+                  logger.addLog(id, 'error', `结束响应失败: ${endError.message}`);
+                }
+              }
+              return;
+            }
+          }
+          
           // 检查响应体类型
           if (typeof workerResponse.body === 'string') {
             // 检查是否是 HTML
